@@ -1,3 +1,4 @@
+import time
 from os import getenv
 import telebot
 from telebot import types
@@ -245,5 +246,6 @@ if __name__ == '__main__':
     while True:
         try:
             bot.polling(none_stop=True)
+            time.sleep(5)
         except Exception as e:
             print(e)
