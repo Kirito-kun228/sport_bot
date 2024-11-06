@@ -3,9 +3,20 @@ import telebot
 from telebot import types
 import wget
 import xlrd
+import gspread
+from google.oauth2.service_account import Credentials
+import pandas as pd
 
 token = getenv('TOKEN')
 bot = telebot.TeleBot(token)
+
+scopes = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive'
+]
+credentials = Credentials.from_service_account_file('sport_bot/sport-bot-439010-d1a421f189c0.json', scopes=scopes)
+client = gspread.authorize(credentials)
+
 
 
 class Score:
@@ -24,6 +35,12 @@ class Score:
                 '9. Приседания': ['Нет рекордсмена', 0]
             }
         self.options = options
+
+class User:
+    def __init__(self, user_id=None, location=None):
+        self.location = location
+        self.user_id = user_id
+
 
 
 @bot.message_handler(commands=['start', 'help'])
@@ -107,7 +124,13 @@ def callback_worker(call):
     for i in locations:
         if call.data == str(str(i).split()[0][:-1]):
             location = locations[int(call.data)-1]
+            for i in DATA:
+                if int(call.message.chat.id) == int(i.user_id):
+                    i.location = location
+            else:
+                DATA.append(User(user_id=call.message.chat.id, location=location))
             bot.send_message(call.message.chat.id, f'локация изменена на {location}')
+            break
 
 
 
@@ -127,63 +150,88 @@ def report(message):
 
 
 def processing_report(message):
-    #url = message.text
-    #wget.download(url)
-    book = xlrd.open_workbook('7.10.xls')
-    sheet = book.sheet_by_index(0)
-    lst = list(sheet.get_rows())
+    for i in DATA:
+        if int(message.chat.id) == int(i.user_id):
+            location = i.location
+            print(location)
+            break
+    else:
+        bot.send_message(message.chat.id, 'Локация не выбрана. Перенос на выбор локации...')
+        settings(message)
+        return False
+
+
+    sheet = client.open_by_url(str(message.text))
+    worksheet = sheet.get_worksheet(0)
+    data = worksheet.get_all_values()
+
+    # Создаем DataFrame с заголовками из первой строки таблицы
+    df = pd.DataFrame(data[1:], columns=data[0])
+
     score_ch_male = Score()
     score_ch_female = Score()
     score_ma_male = Score()
     score_ma_female = Score()
     sex = ''
     age = ''
-    print(lst)
-    k=0
-    for row in lst:
-        k+=1
-        print(k)
+    k = 0
+
+    # Обходим строки DataFrame, используя .iloc
+    for i, row in df.iterrows():
+        k += 1
         try:
-            if row[1].value == 'жен':
+            # Проверяем пол, используя .iloc
+            if row.iloc[1] == 'жен':
                 sex = 'female'
-            elif row[1].value=='муж':
+            elif row.iloc[1] == 'муж':
                 sex = 'male'
-            if row[3].value <= 17:
-                age = 'ch'
-            elif row[3].value > 17:
-                age = 'ma'
+
+            # Проверяем возраст, используя .iloc
+            try:
+                vozr=int(row.iloc[3])
+                if vozr <= 17:
+                    age = 'ch'
+                elif vozr > 17:
+                    age = 'ma'
+            except:
+                age=''
+
+            # Логика проверки и обновления значений
             if age == 'ch':
                 if sex == 'female':
-                    if score_ch_female.options[row[6].value][1] < row[7].value:
-                        score_ch_female.options[row[6].value] = [row[2].value, row[7].value]
+                    if score_ch_female.options[row.iloc[6]][1] < int(row.iloc[7]):
+                        score_ch_female.options[row.iloc[6]] = [row.iloc[2], int(row.iloc[7])]
                 elif sex == 'male':
-                    if score_ch_male.options[row[6].value][1] < row[7].value:
-                        score_ch_male.options[row[6].value] = [row[2].value, row[7].value]
+                    if score_ch_male.options[row.iloc[6]][1] < int(row.iloc[7]):
+                        score_ch_male.options[row.iloc[6]] = [row.iloc[2], int(row.iloc[7])]
             elif age == 'ma':
                 if sex == 'female':
-                    if score_ma_female.options[row[6].value][1] < row[7].value:
-                        score_ma_female.options[row[6].value] = [row[2].value, row[7].value]
+                    if score_ma_female.options[row.iloc[6]][1] < int(row.iloc[7]):
+                        score_ma_female.options[row.iloc[6]] = [row.iloc[2], int(row.iloc[7])]
                 elif sex == 'male':
-                    if score_ma_male.options[row[6].value][1] < row[7].value:
-                        score_ma_male.options[row[6].value] = [row[2].value, row[7].value]
-        except:
-            ...
-        print('test')
+                    if score_ma_male.options[row.iloc[6]][1] < int(row.iloc[7]):
+                        score_ma_male.options[row.iloc[6]] = [row.iloc[2], int(row.iloc[7])]
+        except Exception as e:
+            print(f"Error on row {k}: {e}")
+              # Пропускаем строку в случае ошибки
 
-    print(1)
-    content=(f'🛑 РЕКОРД ДНЯ🔝\n\n'
-             f'📍Локация:\n\n'
-             f'Рекорд дня от\n\n')
-    content+='Категория: Дети\n\n'
-    names=list(score_ch_male.options)
 
-    for i in range(9):
-        content+=(f'Дисциплина {names[i]}:\n'
+
+    # Генерация контента для отправки в Telegram
+    content = (f'🛑 РЕКОРД ДНЯ🔝\n\n'
+               f'📍Локация: {location}\n\n'
+               f'Рекорд дня от {sheet.title}\n\n')
+    content += 'Категория: Дети\n\n'
+
+    names = list(score_ch_male.options)
+    for i in range(min(9, len(names))):
+        content += (f'Дисциплина {names[i]}:\n'
                     f'М. - {score_ch_male.options[names[i]][0]} - {score_ch_male.options[names[i]][1]}\n')
         content += (f'Ж. - {score_ch_female.options[names[i]][0]} - {score_ch_female.options[names[i]][1]}\n\n')
-    content+=f'Категория: Взрослые:\n\n'
-    for i in range(9):
-        content+=(f'Дисциплина {names[i]}:\n'
+
+    content += 'Категория: Взрослые\n\n'
+    for i in range(min(9, len(names))):
+        content += (f'Дисциплина {names[i]}:\n'
                     f'М. - {score_ma_male.options[names[i]][0]} - {score_ma_male.options[names[i]][1]}\n')
         content += (f'Ж. - {score_ma_female.options[names[i]][0]} - {score_ma_female.options[names[i]][1]}\n\n')
 
@@ -193,6 +241,7 @@ def processing_report(message):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
+    DATA=[]
     while True:
         try:
             bot.polling(none_stop=True)
